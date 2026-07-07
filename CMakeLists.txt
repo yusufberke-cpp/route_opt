@@ -12,16 +12,7 @@ add_executable(sr
     dp_opt.cpp
     route_organizer.cpp
 )
-
-target_include_directories(sr PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    C:/vcpkg/installed/x64-windows/include
-)
-
-target_link_libraries(sr PRIVATE
-    OpenMP::OpenMP_CXX
-)
-
-target_include_directories(sr PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/external
-)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(sr PUBLIC OpenMP::OpenMP_CXX)
+endif()
+target_include_directories(sr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
