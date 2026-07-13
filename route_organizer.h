@@ -38,12 +38,14 @@ struct Point {
 
 };
 extern std::vector<uint8_t> landMask;
+extern vector<uint8_t> rawMask;
 void loadLandMask();
 bool isLand(double lat, double lon);
 bool isSafePath(float lat1, float lon1, float lat2, float lon2);
 bool isCriticalZone(float lat, float lon);
 float haversine(float lat1, float lon1, float lat2, float lon2);
 float calculateHeading(float lat1, float lon1, float lat2, float lon2);
+int checkPathSafety(float lat1, float lon1, float lat2, float lon2);
 vector<Stage> loadDPMap(const string& filename);
 void saveDPMap(const vector<Stage>& dp_map, const string& filename);
 vector<vector<float>> readCSV_fast(const string& filename, int colNum, bool skipHeader = true);

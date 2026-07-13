@@ -2,9 +2,9 @@
 
 const float pi = 3.14159f;
 const float min_Vreal = 0.5f;    
-const float lambda_turn = 0.02f;
+const float lambda_turn = 0.5f;
 
-const float temp_factor = 0.5f;
+const float temp_factor = 0.8f;
 
 const float k_head = 0.05f;     
 const float k_cross = 0.04f;    

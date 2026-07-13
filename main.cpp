@@ -52,21 +52,47 @@ struct WeatherCloud {
 };
 
 
+void clearPortArea(float lat, float lon, int radius_pixels = 10) {
+    int center_x = (int)((lon + 180.0) / 0.005);
+    int center_y = (int)((90.0 - lat) / 0.005);
+
+    for (int dy = -radius_pixels; dy <= radius_pixels; ++dy) {
+        for (int dx = -radius_pixels; dx <= radius_pixels; ++dx) {
+            if (dx * dx + dy * dy <= radius_pixels * radius_pixels) {
+                int x = center_x + dx;
+                int y = center_y + dy;
+
+                if (x >= 0 && x < 72000 && y >= 0 && y < 36000) {
+                    uint64_t index = static_cast<uint64_t>(y) * 72000 + x;
+                    uint64_t byteIndex = index / 8;
+                    uint8_t bitOffset = index % 8;
+
+                    landMask[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
+
+                    rawMask[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
+                }
+            }
+        }
+    }
+}
+
 // her çemberde 69 nokta var
 // lat-lon / enlem-boylam
 // hızlar knot cinsinden 1 knot = 0.514444444 m / s
 int main() {
 
     loadLandMask();
-
+    cout << isLand(59.892536, 24.371132) << endl;
     vector<vector<float>> original_waypoints = readCSV_fast("original_wp.csv", 2);
     if (original_waypoints.empty()) {
-        cerr << "Hata: original_wp.csv dosyasi bulunamadi veya bos!" << endl;
+        cerr << "Hata: original_wp.csv dosyasi bulunamadi veya bos" << endl;
     }
     else {
         cout << "Waypointler okundu: " << original_waypoints.size() << " adet." << endl;
+        clearPortArea(original_waypoints.front()[0], original_waypoints.front()[1], 15); // Kalkış
+        clearPortArea(original_waypoints.back()[0], original_waypoints.back()[1], 15);   // Varış
     }
-
+    
     // orijinal rotadaki noktalar arasinda cizgi cekip etrafindaki pikselleri deniz (0) yaptim ki kanallarda rota bulunmazligi yasanmasin direk ana rotayı deniz gorsun çünkü buffer boğazları birleştiriyor
     for (size_t i = 0; i < original_waypoints.size() - 1; ++i) {
 
@@ -75,33 +101,50 @@ int main() {
         double lat2 = original_waypoints[i + 1][0];
         double lon2 = original_waypoints[i + 1][1];
 
-        if (isCriticalZone(lat1, lon1) || isCriticalZone(lat2, lon2) || isLand(original_waypoints.back()[0], original_waypoints.back()[1])) {
-
+        if (true) {
             double dLat = lat2 - lat1;
             double dLon = lon2 - lon1;
             double dist = std::sqrt(dLat * dLat + dLon * dLon);
 
             int steps = static_cast<int>(dist / 0.001) + 1;
 
+            int tunnel_radius = 6;
+
             for (int j = 0; j <= steps; ++j) {
                 double t = (double)j / steps;
                 double currLat = lat1 + t * dLat;
                 double currLon = lon1 + t * dLon;
+                bool in_canal = isCriticalZone(currLat, currLon);
+				
+                for (int dy = -tunnel_radius; dy <= tunnel_radius; ++dy) {
+                    for (int dx = -tunnel_radius; dx <= tunnel_radius; ++dx) {
 
-                for (int dy = -1; dy <= 1; ++dy) {
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        int x = (int)((currLon + 180.0) / 0.005) + dx;
-                        int y = (int)((90.0 - currLat) / 0.005) + dy;
-                        if (x >= 0 && x < 72000 && y >= 0 && y < 36000) {
-                            uint64_t index = static_cast<uint64_t>(y) * 72000 + x;
-                            landMask[index] = 0; // 255 olan karayı 0 yapıp suyu aç
+    
+                        if (dx * dx + dy * dy <= tunnel_radius * tunnel_radius) {
+
+                            int x = (int)((currLon + 180.0) / 0.005) + dx;
+                            int y = (int)((90.0 - currLat) / 0.005) + dy;
+
+                            if (x >= 0 && x < 72000 && y >= 0 && y < 36000) {
+                                uint64_t index = static_cast<uint64_t>(y) * 72000 + x;
+                                uint64_t byteIndex = index / 8;
+                                uint8_t bitOffset = index % 8;
+
+                                if (in_canal || (rawMask[byteIndex] & (1U << bitOffset)) == 0) {
+
+                                    landMask[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
+
+                                }
+                               
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
+    }
+    
     float max_gap_km = 150.0f;
     vector<Point> centers = adaptiveInterpolate(original_waypoints, max_gap_km);
 
@@ -214,7 +257,7 @@ int main() {
         // her thread tüm stage'leri sırayla gezcek
         for (size_t s = 0; s < dp_map.size() - 1; ++s) {
 
-            // ekrana yazdırma işlemini sadece tek bir thread yapsın
+            // ekrana yazdırma işlemi tek threadin
 #pragma omp single
             {
                 if (s % 10 == 0 || s == dp_map.size() - 2) {
@@ -252,21 +295,65 @@ int main() {
                     return a.index < b.index;
                     });
 
+                float best_total_cost = numeric_limits<float>::infinity();
+                int best_parent_index = -1;
+                float best_heading = -1;
+
                 for (const auto& offer : offers) {
+                    // Eğer önceden bulduğumuz en iyi maliyet, bu offer'ın salt maliyetinden bile küçükse,
+                    // listenin geri kalanına bakmamıza gerek yok (çünkü offers cost'a göre sıralı)
+                    if (offer.cost >= best_total_cost) {
+                        break;
+                    }
+
                     int a_index = offer.index;
                     Node& best_nodeA = current_stage.nodes[a_index];
 
-                    if (isSafePath(best_nodeA.lat, best_nodeA.lon, nodeB.lat, nodeB.lon)) {
-                        nodeB.total_cost = offer.cost;
-                        nodeB.back_pointer = a_index;
-                        nodeB.incoming_heading = offer.heading;
-                        break;
+                    // Fonksiyonumuzu çağırıyoruz
+                    int path_status = checkPathSafety(best_nodeA.lat, best_nodeA.lon, nodeB.lat, nodeB.lon);
+
+                    // Eğer -1 değilse (gerçek karaya çarpmadıysa) bu yol GEÇİLEBİLİRDİR
+                    if (path_status != -1) {
+                        float buffer_penalty = path_status * 100.0f;
+                        float final_cost = offer.cost + buffer_penalty;
+
+                        if (final_cost < best_total_cost) {
+                            best_total_cost = final_cost;
+                            best_parent_index = a_index;
+                            best_heading = offer.heading;
+                        }
                     }
+                }
+
+                if (best_parent_index != -1) {
+                    nodeB.total_cost = best_total_cost;
+                    nodeB.back_pointer = best_parent_index;
+                    nodeB.incoming_heading = best_heading;
                 }
             }
         }
     }
+    bool total_failure = false;
+    for (size_t s = 0; s < dp_map.size(); ++s) {
+        bool stage_alive = false;
+        for (const auto& node : dp_map[s].nodes) {
+            if (node.total_cost != numeric_limits<float>::infinity()) {
+                stage_alive = true;
+                break;
+            }
+        }
 
+        if (!stage_alive) {
+            cout << ">>> hata:" << s << "'den itibaren zincir koptu" << endl;
+            cout << ">>> kopan koordinat: " << centers[s].lat << ", " << centers[s].lon << endl;
+            total_failure = true;
+            break;
+        }
+    }
+
+    if (total_failure) {
+        return -1;
+    }
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
@@ -331,8 +418,7 @@ int main() {
         if (row.size() >= 3) cloud.pts.push_back({ row[0], row[1], row[2] });
     }
 
-    typedef nanoflann::KDTreeSingleIndexAdaptor<
-        nanoflann::L2_Simple_Adaptor<float, WeatherCloud>, WeatherCloud, 2> my_kd_tree_t;
+    typedef nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<float, WeatherCloud>, WeatherCloud, 2> my_kd_tree_t;
     my_kd_tree_t index(2, cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10));
     index.buildIndex();
 

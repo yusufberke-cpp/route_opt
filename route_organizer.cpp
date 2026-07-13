@@ -15,7 +15,7 @@ using namespace std;
 bool isLand(double lat, double lon);
 
 vector<uint8_t> landMask;
-
+vector<uint8_t> rawMask;
 const float pi = 3.14159f;
 
 struct WeatherPoint {
@@ -266,6 +266,7 @@ vector<Stage> loadDPMap(const string& filename) {
     }
 
     in.close();
+
     return dp_map;
 
 }
@@ -379,7 +380,8 @@ bool isCriticalZone(float lat, float lon) {
 
     if (lat >= 30.55f && lat <= 31.35f && lon >= 32.20f && lon <= 32.40f) return true; //ilk kısmı
     if (lat >= 29.90f && lat <= 30.55f && lon >= 32.30f && lon <= 32.65f) return true; //ikinci kısmı
-
+    //if (lat >= 29.90f && lat <= 31.30f && lon >= 32.25f && lon <= 32.65f) return true;
+    //if (lat >= 27.00f && lat <= 31.50f && lon >= 32.00f && lon <= 34.50f) return true;
     // Panama Kanalı ve girişleri
     if (lat >= 8.85f && lat <= 9.40f && lon >= -80.00f && lon <= -79.50f) return true;
 
@@ -502,42 +504,40 @@ vector<Stage> buildDPMap(const vector<Point>& centers, const vector<vector<float
         cerr << "surviving_nodes.json dosyasi olusturulamadi" << endl;
 
     }
-
+    
     return dp_map;
 
 }
 
 
-
-
-
-
-
-
-
 void loadLandMask() {
-
-    std::ifstream is("land_mask_grid.bin", std::ios::binary);
-
+    std::ifstream is("dilated_landmask12km.bin", std::ios::binary);
     if (is) {
-
-        // dosya boyutunu öğren ve vektörü boyutlandır
         is.seekg(0, std::ios::end);
         size_t size = is.tellg();
         is.seekg(0, std::ios::beg);
         landMask.resize(size);
-
-        // ram'e oku
         is.read((char*)landMask.data(), size);
-
     }
-
     else {
-        cerr << "hata: land_mask_grid.bin acilamadi, landMask bos kalacak." << endl;
 
+        exit(1);
     }
-    cout << "landMask boyutu: " << landMask.size() << endl;
 
+    std::ifstream is_raw("land_mask_grid.bin", std::ios::binary);
+    if (is_raw) {
+        is_raw.seekg(0, std::ios::end);
+        size_t size = is_raw.tellg();
+        is_raw.seekg(0, std::ios::beg);
+        rawMask.resize(size);
+        is_raw.read((char*)rawMask.data(), size);
+    }
+    else {
+        
+        exit(1);
+    }
+
+    cout << "maskler yuklendi" << endl;
 }
 
 
@@ -552,14 +552,16 @@ bool isLand(double lat, double lon) {
 
     uint64_t index = static_cast<uint64_t>(y) * 72000 + x;
 
-    if (index >= landMask.size()) return false;
+    uint64_t byteIndex = index / 8;
+    uint8_t bitOffset = index % 8;
 
-    return (landMask[index] == 255);
+    if (byteIndex >= landMask.size()) return false;
+
+    return (landMask[byteIndex] & (1U << bitOffset)) != 0;
 
 }
 
 bool isSafePath(float lat1, float lon1, float lat2, float lon2) {
-
     int x1 = static_cast<int>((lon1 + 180.0) * 200.0);
     int y1 = static_cast<int>((90.0 - lat1) * 200.0);
     int x2 = static_cast<int>((lon2 + 180.0) * 200.0);
@@ -570,10 +572,68 @@ bool isSafePath(float lat1, float lon1, float lat2, float lon2) {
 
     while (true) {
         if (x1 >= 0 && x1 < 72000 && y1 >= 0 && y1 < 36000) {
-
             uint64_t index = static_cast<uint64_t>(y1) * 72000 + x1;
-            if (landMask[index] == 255) return false; // Kara
 
+            uint64_t byteIndex = index / 8;
+            uint8_t bitOffset = index % 8;
+
+            if (byteIndex < landMask.size()) {
+                if ((landMask[byteIndex] & (1U << bitOffset)) != 0) return false; // kara
+            }
+            else {
+				return false; // harita dışı alanlar
+            }
+        }
+
+        if (x1 == x2 && y1 == y2) break;
+        e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x1 += sx; }
+        if (e2 <= dx) { err += dx; y1 += sy; }
+    }
+    return true;
+}
+
+
+
+int checkPathSafety(float lat1, float lon1, float lat2, float lon2) {
+    int x1 = static_cast<int>((lon1 + 180.0) * 200.0);
+    int y1 = static_cast<int>((90.0 - lat1) * 200.0);
+    int x2 = static_cast<int>((lon2 + 180.0) * 200.0);
+    int y2 = static_cast<int>((90.0 - lat2) * 200.0);
+    int dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+    int dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+    int err = dx + dy, e2;
+
+    int penalty_score = 0;
+
+    // Bu çizginin kritik bir kanalda (Süveyş vb.) olup olmadığını kontrol et
+    bool in_critical = isCriticalZone(lat1, lon1) || isCriticalZone(lat2, lon2);
+
+    while (true) {
+        if (x1 >= 0 && x1 < 72000 && y1 >= 0 && y1 < 36000) {
+            uint64_t index = static_cast<uint64_t>(y1) * 72000 + x1;
+            uint64_t byteIndex = index / 8;
+            uint8_t bitOffset = index % 8;
+
+            // 1. GERÇEK KARA KONTROLÜ (RAW MASK)
+            if ((rawMask[byteIndex] & (1U << bitOffset)) != 0) {
+                if (in_critical) {
+                    // KANALDAYIZ: Zinciri koparma! Sadece devasa ceza ver.
+                    // DP mecburen en az kumdan (en çok sudan) geçen çizgiyi seçecek.
+                    penalty_score += 100;
+                }
+                else {
+                    // AÇIK DENİZ: Gerçek karaya çarptı, affetme, yolu kapat.
+                    return -1;
+                }
+            }
+            // 2. GÜVENLİK BÖLGESİ KONTROLÜ (LAND MASK 12KM)
+            else if ((landMask[byteIndex] & (1U << bitOffset)) != 0) {
+                penalty_score += 1; // Normal dolgu cezası
+            }
+        }
+        else {
+            return -1; // Harita dışı
         }
 
         if (x1 == x2 && y1 == y2) break;
@@ -582,7 +642,5 @@ bool isSafePath(float lat1, float lon1, float lat2, float lon2) {
         if (e2 <= dx) { err += dx; y1 += sy; }
     }
 
-    return true;
-
+    return penalty_score;
 }
-
