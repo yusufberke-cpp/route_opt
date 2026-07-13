@@ -520,7 +520,8 @@ void loadLandMask() {
         is.read((char*)landMask.data(), size);
     }
     else {
-
+        std::cout << "dilated_landmask12km.bin dosyasi bulunamadi" << std::endl;
+        std::cout.flush();
         exit(1);
     }
 
@@ -534,6 +535,8 @@ void loadLandMask() {
     }
     else {
         
+        std::cout << "land_mask_grid.bin dosyasi bulunamadi" << std::endl;
+        std::cout.flush();
         exit(1);
     }
 
@@ -606,7 +609,6 @@ int checkPathSafety(float lat1, float lon1, float lat2, float lon2) {
 
     int penalty_score = 0;
 
-    // Bu çizginin kritik bir kanalda (Süveyş vb.) olup olmadığını kontrol et
     bool in_critical = isCriticalZone(lat1, lon1) || isCriticalZone(lat2, lon2);
 
     while (true) {
@@ -615,25 +617,24 @@ int checkPathSafety(float lat1, float lon1, float lat2, float lon2) {
             uint64_t byteIndex = index / 8;
             uint8_t bitOffset = index % 8;
 
-            // 1. GERÇEK KARA KONTROLÜ (RAW MASK)
+          
             if ((rawMask[byteIndex] & (1U << bitOffset)) != 0) {
                 if (in_critical) {
-                    // KANALDAYIZ: Zinciri koparma! Sadece devasa ceza ver.
-                    // DP mecburen en az kumdan (en çok sudan) geçen çizgiyi seçecek.
+      
                     penalty_score += 100;
                 }
                 else {
-                    // AÇIK DENİZ: Gerçek karaya çarptı, affetme, yolu kapat.
+                
                     return -1;
                 }
             }
-            // 2. GÜVENLİK BÖLGESİ KONTROLÜ (LAND MASK 12KM)
+   
             else if ((landMask[byteIndex] & (1U << bitOffset)) != 0) {
-                penalty_score += 1; // Normal dolgu cezası
+                penalty_score += 1; // normal dolgu cezası
             }
         }
         else {
-            return -1; // Harita dışı
+            return -1; // harita dışı
         }
 
         if (x1 == x2 && y1 == y2) break;

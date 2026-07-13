@@ -82,7 +82,6 @@ void clearPortArea(float lat, float lon, int radius_pixels = 10) {
 int main() {
 
     loadLandMask();
-    cout << isLand(59.892536, 24.371132) << endl;
     vector<vector<float>> original_waypoints = readCSV_fast("original_wp.csv", 2);
     if (original_waypoints.empty()) {
         cerr << "Hata: original_wp.csv dosyasi bulunamadi veya bos" << endl;
@@ -300,8 +299,8 @@ int main() {
                 float best_heading = -1;
 
                 for (const auto& offer : offers) {
-                    // Eğer önceden bulduğumuz en iyi maliyet, bu offer'ın salt maliyetinden bile küçükse,
-                    // listenin geri kalanına bakmamıza gerek yok (çünkü offers cost'a göre sıralı)
+                    // Eğer önceden bulduğumuz en iyi maliyet, bu offer'ın saf maliyetinden bile küçükse,
+                    // listenin geri kalanına bakmamıza gerek yok (çünkü offers cost'a göre sıralı), raporda belirttim
                     if (offer.cost >= best_total_cost) {
                         break;
                     }
@@ -312,7 +311,7 @@ int main() {
                     // Fonksiyonumuzu çağırıyoruz
                     int path_status = checkPathSafety(best_nodeA.lat, best_nodeA.lon, nodeB.lat, nodeB.lon);
 
-                    // Eğer -1 değilse (gerçek karaya çarpmadıysa) bu yol GEÇİLEBİLİRDİR
+                    // Eğer -1 değilse (gerçek karaya çarpmadıysa) geçilebilir yol
                     if (path_status != -1) {
                         float buffer_penalty = path_status * 100.0f;
                         float final_cost = offer.cost + buffer_penalty;
@@ -346,6 +345,7 @@ int main() {
         if (!stage_alive) {
             cout << ">>> hata:" << s << "'den itibaren zincir koptu" << endl;
             cout << ">>> kopan koordinat: " << centers[s].lat << ", " << centers[s].lon << endl;
+            cout.flush();
             total_failure = true;
             break;
         }
