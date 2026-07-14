@@ -1,5 +1,6 @@
 #define NOMINMAX 
 
+
 #include <stdio.h>
 #include <iostream>
 #include <vector>
@@ -91,7 +92,7 @@ int main() {
         clearPortArea(original_waypoints.front()[0], original_waypoints.front()[1], 15); // Kalkış
         clearPortArea(original_waypoints.back()[0], original_waypoints.back()[1], 15);   // Varış
     }
-    
+
     // orijinal rotadaki noktalar arasinda cizgi cekip etrafindaki pikselleri deniz (0) yaptim ki kanallarda rota bulunmazligi yasanmasin direk ana rotayı deniz gorsun çünkü buffer boğazları birleştiriyor
     for (size_t i = 0; i < original_waypoints.size() - 1; ++i) {
 
@@ -114,11 +115,11 @@ int main() {
                 double currLat = lat1 + t * dLat;
                 double currLon = lon1 + t * dLon;
                 bool in_canal = isCriticalZone(currLat, currLon);
-				
+
                 for (int dy = -tunnel_radius; dy <= tunnel_radius; ++dy) {
                     for (int dx = -tunnel_radius; dx <= tunnel_radius; ++dx) {
 
-    
+
                         if (dx * dx + dy * dy <= tunnel_radius * tunnel_radius) {
 
                             int x = (int)((currLon + 180.0) / 0.005) + dx;
@@ -134,7 +135,7 @@ int main() {
                                     landMask[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
 
                                 }
-                               
+
                             }
                         }
                     }
@@ -143,7 +144,7 @@ int main() {
         }
 
     }
-    
+
     float max_gap_km = 150.0f;
     vector<Point> centers = adaptiveInterpolate(original_waypoints, max_gap_km);
 
@@ -204,19 +205,30 @@ int main() {
     float ship_speed = 10.0f; // geminin ortalama hızı (10 m/s 19.4 knot) bu çok önemli değil statik değer olması lazım
     float inv_ship_speed = 1.0f / ship_speed;
 
-    dp_map[0].nodes.clear();
-    Node start_node;
-    start_node.lat = original_waypoints[0][0];
-    start_node.lon = original_waypoints[0][1];
-    start_node.total_cost = 0.0f;
+    for (int i = 0; i < 2; i++)
+    {
+        dp_map[i].nodes.clear();
 
-    // temp'i en yakın veri noktasından al
-    float min_d = 1e9;
-    for (const auto& w : weather_data) {
-        float d = haversine(start_node.lat, start_node.lon, w[0], w[1]);
-        if (d < min_d) { min_d = d; start_node.temp = w[2]; }
+        Node node;
+        node.lat = original_waypoints[i][0];
+        node.lon = original_waypoints[i][1];
+
+        node.total_cost = (i == 0) ? 0.0f : std::numeric_limits<float>::infinity();
+
+        float min_d = std::numeric_limits<float>::max();
+
+        for (const auto& w : weather_data)
+        {
+            float d = haversine(node.lat, node.lon, w[0], w[1]);
+            if (d < min_d)
+            {
+                min_d = d;
+                node.temp = w[2];
+            }
+        }
+
+        dp_map[i].nodes.push_back(node);
     }
-    dp_map[0].nodes.push_back(start_node);
 
     int last_idx = dp_map.size() - 1;
     dp_map[last_idx].nodes.clear();
@@ -224,6 +236,7 @@ int main() {
     Node final_node;
     final_node.lat = original_waypoints.back()[0];
     final_node.lon = original_waypoints.back()[1];
+
     float min_dist = 999999.0f;
     float real_temp = 15.0f; // eğer haritada hiç veri yoksa güvenlik amaçlı
 
@@ -242,7 +255,7 @@ int main() {
     // ---forward pass---
 #pragma omp parallel
     {
-		// her thread kendi lokal struct'ını ve vektörünü 1 kez oluşturur ki çakışma fln olmasın
+        // her thread kendi lokal struct'ını ve vektörünü 1 kez oluşturur ki çakışma fln olmasın
         struct Offer {
             float cost;
             int index;
@@ -400,6 +413,7 @@ int main() {
         optimized_route.push_back({ n.lat, n.lon });
         opt_total_temp += n.temp;
 
+
         if (s > 0) {
             current_node_idx = n.back_pointer;
         }
@@ -438,7 +452,7 @@ int main() {
         index.findNeighbors(resultSet, &query_pt[0], nanoflann::SearchParameters(10));
         orig_total_temp += cloud.pts[ret_index].temp;
     }
-
+    cout << optimized_route.size() << endl;
     float opt_avg_temp = opt_total_temp / optimized_route.size();
     float orig_avg_temp = orig_total_temp / centers.size();
 
@@ -516,6 +530,27 @@ int main() {
     else {
         cerr << "dosya olusturulamadi" << endl;
     }
+    ofstream orig_js_file("original_wp.js");
 
+    if (orig_js_file.is_open()) {
+
+        orig_js_file << "const original_csv_data = `";
+        orig_js_file << std::fixed << std::setprecision(8);
+
+        for (size_t i = 0; i < original_waypoints.size(); ++i) {
+            orig_js_file << original_waypoints[i][0] << "," << original_waypoints[i][1];
+
+            if (i < original_waypoints.size() - 1) {
+                orig_js_file << "\n";
+            }
+        }
+
+        orig_js_file << "`;\n";
+        orig_js_file.close();
+        cout << "original_wp.js dosyasi olusturuldu." << endl;
+    }
+    else {
+        cerr << "original_wp.js dosyasi olusturulamadi" << endl;
+    }
     return 0;
 }
