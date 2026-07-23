@@ -83,6 +83,7 @@ void clearPortArea(float lat, float lon, int radius_pixels = 10) {
 int main() {
 
     loadLandMask();
+
     vector<vector<float>> original_waypoints = readCSV_fast("original_wp.csv", 2);
     if (original_waypoints.empty()) {
         cerr << "Hata: original_wp.csv dosyasi bulunamadi veya bos" << endl;
@@ -130,11 +131,11 @@ int main() {
                                 uint64_t byteIndex = index / 8;
                                 uint8_t bitOffset = index % 8;
 
-                                if (in_canal || (rawMask[byteIndex] & (1U << bitOffset)) == 0) {
+                                //if (in_canal || (rawMask[byteIndex] & (1U << bitOffset)) == 0) {
 
                                     landMask[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
 
-                                }
+                                //}
 
                             }
                         }
@@ -145,7 +146,7 @@ int main() {
 
     }
 
-    float max_gap_km = 150.0f;
+	float max_gap_km = 150.0f; // kaç km'den fazla boşluk varsa araya sanal nokta ekleyecek
     vector<Point> centers = adaptiveInterpolate(original_waypoints, max_gap_km);
 
     cout << "Orijinal wp sayisi: " << original_waypoints.size() << endl;
@@ -161,7 +162,7 @@ int main() {
     cout << "okunan toplam veri satiri: " << weather_data.size() << endl;
     cout << "veriler merkezlere yerlestiriliyor" << endl;
 
-    float search_radius_km = 50; // her merkez etrafindaki cemberin yaricapi
+    float search_radius_km = 50.0f; // her merkez etrafindaki cemberin yaricapi (rotadan ne kadar sapcağınıda bu belirliyor)
 
     vector<Stage> dp_map;
     ifstream test("dp_cache.bin", ios::binary);
@@ -176,7 +177,39 @@ int main() {
     }
 
     cout << "dp haritasi hazir: " << dp_map.size() << endl;
+    for (size_t s = 1; s < dp_map.size() - 1; ++s) {
+        bool center_exists = false;
+        for (auto& n : dp_map[s].nodes) {
+            // Toleransı biraz yüksek tutuyoruz ki interpolasyon sapmalarını yakalasın
+            if (std::abs(n.lat - centers[s].lat) < 0.02f && std::abs(n.lon - centers[s].lon) < 0.02f) {
+                center_exists = true;
+                break;
+            }
+        }
 
+        // Eğer merkez nokta karada sanılıp listeye eklenmemişse, biz zorla ekliyoruz
+        if (!center_exists) {
+            Node n;
+            n.lat = centers[s].lat;
+            n.lon = centers[s].lon;
+            n.total_cost = numeric_limits<float>::infinity();
+            n.back_pointer = -1;
+            n.temp = 15.0f; // Güvenlik değeri
+
+            // Sıcaklık ataması
+            float min_d = 999999.0f;
+            for (const auto& w : weather_data) {
+                if (w.size() >= 3) {
+                    float d = haversine(n.lat, n.lon, w[0], w[1]);
+                    if (d < min_d) {
+                        min_d = d;
+                        n.temp = w[2];
+                    }
+                }
+            }
+            dp_map[s].nodes.push_back(n);
+        }
+    }
     auto start = std::chrono::steady_clock::now();
     int empty_stages = 0;
     int single_stages = 0;
@@ -295,6 +328,19 @@ int main() {
                     // Trigonometrik hesaplamalar
                     float dist = haversine(nodeA.lat, nodeA.lon, nodeB.lat, nodeB.lon);
                     float ship_dir = calculateHeading(nodeA.lat, nodeA.lon, nodeB.lat, nodeB.lon);
+                    //----sarmal engelleme (rotanın kendi üstünden tekrar dolanmaması için, yani çember gibi işte)
+                    float ref_heading = calculateHeading(centers[s].lat, centers[s].lon, centers[s + 1].lat, centers[s + 1].lon);
+
+                    // Geminin gitmek istediği yön ile rotanın ana yönü arasındaki fark
+                    float angle_diff = std::abs(ref_heading - ship_dir);
+                    if (angle_diff > 180.0f) angle_diff = 360.0f - angle_diff;
+
+                    // Eğer gemi ana ilerleme yönünden 85 dereceden fazla sapıyorsa (yani geriye doğru akıyorsa)
+                    // direk o adımı geç
+                    if (angle_diff > 85.0f) {
+                        continue;
+                    }
+                    //----
 
                     float step_cost = calcCostAF(inv_ship_speed, dist, nodeB.temp, nodeA.incoming_heading, ship_dir);
                     float tentative_cost = nodeA.total_cost + step_cost;
@@ -321,10 +367,16 @@ int main() {
                     int a_index = offer.index;
                     Node& best_nodeA = current_stage.nodes[a_index];
 
-                    // Fonksiyonumuzu çağırıyoruz
                     int path_status = checkPathSafety(best_nodeA.lat, best_nodeA.lon, nodeB.lat, nodeB.lon);
+                    if (path_status == -1) {
+                        bool is_center_A = (std::abs(best_nodeA.lat - centers[s].lat) < 0.02f && std::abs(best_nodeA.lon - centers[s].lon) < 0.02f);
+                        bool is_center_B = (std::abs(nodeB.lat - centers[s + 1].lat) < 0.02f && std::abs(nodeB.lon - centers[s + 1].lon) < 0.02f);
 
-                    // Eğer -1 değilse (gerçek karaya çarpmadıysa) geçilebilir yol
+                        if (is_center_A && is_center_B) {
+                            path_status = 5; 
+                        }
+                    }
+                  
                     if (path_status != -1) {
                         float buffer_penalty = path_status * 100.0f;
                         float final_cost = offer.cost + buffer_penalty;
@@ -421,10 +473,35 @@ int main() {
 
     reverse(optimized_route.begin(), optimized_route.end());
 
-    opt_total_dist = 0.0f;
-    for (size_t i = 0; i < optimized_route.size() - 1; ++i) {
-        opt_total_dist += haversine(optimized_route[i].lat, optimized_route[i].lon, optimized_route[i + 1].lat, optimized_route[i + 1].lon);
+    vector<float> opt_node_temps;
+    opt_node_temps.reserve(optimized_route.size());
+
+    current_node_idx = best_final_node_idx;
+    for (int s = last_stage_idx; s >= 0; --s) {
+        opt_node_temps.push_back(dp_map[s].nodes[current_node_idx].temp);
+        if (s > 0) {
+            current_node_idx = dp_map[s].nodes[current_node_idx].back_pointer;
+        }
     }
+    reverse(opt_node_temps.begin(), opt_node_temps.end());
+
+    opt_total_dist = 0.0f;
+    float opt_weighted_temp_sum = 0.0f;
+
+    for (size_t i = 0; i < optimized_route.size() - 1; ++i) {
+        float seg_dist = haversine(optimized_route[i].lat, optimized_route[i].lon,
+            optimized_route[i + 1].lat, optimized_route[i + 1].lon);
+
+        // İki düğüm arasındaki segmentin ortalama sıcaklığı
+        float seg_temp = (opt_node_temps[i] + opt_node_temps[i + 1]) * 0.5f;
+
+        opt_total_dist += seg_dist;
+        opt_weighted_temp_sum += (seg_temp * seg_dist);
+    }
+
+    // Mesafe ağırlıklı ortalama sıcaklık: Sum(T * d) / Toplam Mesafe
+    float opt_avg_temp = (opt_total_dist > 0.0f) ? (opt_weighted_temp_sum / opt_total_dist) : 0.0f;
+
 
     WeatherCloud cloud;
     cloud.pts.reserve(weather_data.size());
@@ -432,16 +509,15 @@ int main() {
         if (row.size() >= 3) cloud.pts.push_back({ row[0], row[1], row[2] });
     }
 
-    typedef nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<float, WeatherCloud>, WeatherCloud, 2> my_kd_tree_t;
+    typedef nanoflann::KDTreeSingleIndexAdaptor<
+        nanoflann::L2_Simple_Adaptor<float, WeatherCloud>,
+        WeatherCloud, 2> my_kd_tree_t;
+
     my_kd_tree_t index(2, cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10));
     index.buildIndex();
 
-    orig_total_dist = 0.0f;
-    for (size_t i = 0; i < original_waypoints.size() - 1; ++i) {
-        orig_total_dist += haversine(original_waypoints[i][0], original_waypoints[i][1], original_waypoints[i + 1][0], original_waypoints[i + 1][1]);
-    }
 
-    orig_total_temp = 0.0f;
+    vector<float> orig_node_temps(centers.size(), 15.0f);
     for (size_t s = 0; s < centers.size(); ++s) {
         float query_pt[2] = { (float)centers[s].lat, (float)centers[s].lon };
         size_t ret_index = 0;
@@ -450,37 +526,58 @@ int main() {
         resultSet.init(&ret_index, &out_dist_sqr);
 
         index.findNeighbors(resultSet, &query_pt[0], nanoflann::SearchParameters(10));
-        orig_total_temp += cloud.pts[ret_index].temp;
+        orig_node_temps[s] = cloud.pts[ret_index].temp;
     }
-    cout << optimized_route.size() << endl;
-    float opt_avg_temp = opt_total_temp / optimized_route.size();
-    float orig_avg_temp = orig_total_temp / centers.size();
 
-    cout << "--- ROTA OPTIMIZASYON SONUCLARI ---" << endl;
-    cout << "Orijinal merkez sayisi: " << centers.size() << endl;
-    cout << "Optimize rota nokta sayisi: " << optimized_route.size() << endl;
+    orig_total_dist = 0.0f;
+    for (size_t i = 0; i < original_waypoints.size() - 1; ++i) {
+        orig_total_dist += haversine(original_waypoints[i][0], original_waypoints[i][1],
+            original_waypoints[i + 1][0], original_waypoints[i + 1][1]);
+    }
+
+
+    float orig_temp_dist_sum = 0.0f;
+    float orig_weighted_temp_sum = 0.0f;
+
+    for (size_t i = 0; i < centers.size() - 1; ++i) {
+        float seg_dist = haversine(centers[i].lat, centers[i].lon,
+            centers[i + 1].lat, centers[i + 1].lon);
+
+        float seg_temp = (orig_node_temps[i] + orig_node_temps[i + 1]) * 0.5f;
+
+        orig_temp_dist_sum += seg_dist;
+        orig_weighted_temp_sum += (seg_temp * seg_dist);
+    }
+
+    float orig_avg_temp = (orig_temp_dist_sum > 0.0f) ? (orig_weighted_temp_sum / orig_temp_dist_sum) : 0.0f;
+
+
+
+    cout << "\n--- ROTA OPTIMIZASYON SONUCLARI ---" << endl;
+    cout << "Orijinal merkez sayisi     : " << centers.size() << endl;
+    cout << "Optimize rota nokta sayisi : " << optimized_route.size() << endl;
 
     cout << "----------------------------------------" << endl;
     cout << "ORIJINAL ROTA:" << endl;
-    cout << "Gercek Toplam Mesafe : " << orig_total_dist << " km" << endl;
-    cout << "Ortalama Sicaklik    : " << orig_avg_temp << " C" << endl;
+    cout << "Gercek Toplam Mesafe       : " << orig_total_dist << " km" << endl;
+    cout << "Agırlıklı Ort. Sicaklik    : " << orig_avg_temp << " C" << endl;
     cout << "----------------------------------------" << endl;
     cout << "OPTIMIZE EDILMIS ROTA:" << endl;
-    cout << "Yeni Toplam Mesafe   : " << opt_total_dist << " km" << endl;
-    cout << "Ortalama Sicaklik    : " << opt_avg_temp << " C" << endl;
+    cout << "Yeni Toplam Mesafe         : " << opt_total_dist << " km" << endl;
+    cout << "Agırlıklı Ort. Sicaklik    : " << opt_avg_temp << " C" << endl;
     cout << "----------------------------------------" << endl;
 
     float dist_diff_percent = ((opt_total_dist - orig_total_dist) / orig_total_dist) * 100.0f;
     float temp_diff = opt_avg_temp - orig_avg_temp;
 
-    cout << "Mesafe Degisimi      : " << "%" << (dist_diff_percent > 0 ? "+" : "") << dist_diff_percent << endl;
-    cout << "Sicaklik Farki       : " << (temp_diff > 0 ? "+" : "") << temp_diff << " C" << endl;
+    cout << "Mesafe Degisimi            : %" << (dist_diff_percent > 0 ? "+" : "") << dist_diff_percent << endl;
+    cout << "Sicaklik Farki             : " << (temp_diff > 0 ? "+" : "") << temp_diff << " C" << endl;
     cout << "----------------------------------------" << endl;
 
-    cout << "Disa aktariliyor" << endl;
+
+    cout << "Disa aktariliyor..." << endl;
 
     ofstream json_file("route_statistics.json");
-
     if (json_file.is_open()) {
         json_file << std::fixed << std::setprecision(6);
         json_file << "{\n";
@@ -503,14 +600,13 @@ int main() {
         json_file << "}\n";
 
         json_file.close();
-        std::cout << "Istatistikler route_statistics.json dosyasina kaydedildi." << std::endl;
+        cout << "Istatistikler route_statistics.json dosyasina kaydedildi." << endl;
     }
     else {
-        cerr << "JSON dosyasi olusturulamadi" << endl;
+        cerr << "Hata: JSON dosyasi olusturulamadi" << endl;
     }
 
     ofstream out_file("optimized_route_output.js");
-
     if (out_file.is_open()) {
         out_file << "var dp_optimized_route = [\n";
         out_file << std::fixed << std::setprecision(6);
@@ -525,21 +621,19 @@ int main() {
         }
         out_file << "];\n";
         out_file.close();
-        cout << "dosya olusturuldu" << endl;
+        cout << "optimized_route_output.js dosyasi olusturuldu." << endl;
     }
     else {
-        cerr << "dosya olusturulamadi" << endl;
+        cerr << "Hata: JS dosyasi olusturulamadi" << endl;
     }
+
     ofstream orig_js_file("original_wp.js");
-
     if (orig_js_file.is_open()) {
-
         orig_js_file << "const original_csv_data = `";
         orig_js_file << std::fixed << std::setprecision(8);
 
         for (size_t i = 0; i < original_waypoints.size(); ++i) {
             orig_js_file << original_waypoints[i][0] << "," << original_waypoints[i][1];
-
             if (i < original_waypoints.size() - 1) {
                 orig_js_file << "\n";
             }
@@ -550,7 +644,7 @@ int main() {
         cout << "original_wp.js dosyasi olusturuldu." << endl;
     }
     else {
-        cerr << "original_wp.js dosyasi olusturulamadi" << endl;
+        cerr << "Hata: original_wp.js dosyasi olusturulamadi" << endl;
     }
     return 0;
 }
